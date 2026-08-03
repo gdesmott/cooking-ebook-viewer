@@ -19,6 +19,13 @@ const get = async url => {
 
 const loading = () => { view.innerHTML = '<p class="loading">Loading…</p>'; };
 
+// Infinite scroll for the recipe list; torn down whenever the route changes so
+// a stale observer can't append into the next view.
+let pageObserver = null;
+const stopPaging = () => {
+  if (pageObserver) { pageObserver.disconnect(); pageObserver = null; }
+};
+
 function recipeCard(r) {
   const img = r.image
     ? `<img src="/asset/${r.book_id}/${r.image}" loading="lazy" alt="">`
@@ -55,8 +62,9 @@ async function viewBooks() {
 }
 
 async function viewRecipes(q = '', bookId = null) {
+  stopPaging();
   loading();
-  let offset = 0;
+  let offset = 0, done = false, busy = false;
   const url = () => {
     const p = new URLSearchParams({ limit: PAGE, offset });
     if (q) p.set('q', q);
@@ -72,29 +80,47 @@ async function viewRecipes(q = '', bookId = null) {
   view.innerHTML = `${heading}
     <p class="sub" id="count"></p>
     <div class="recipes" id="list"></div>
-    <button class="more" id="more">Load more</button>`;
+    <div class="sentinel" id="sentinel"></div>`;
 
   const list = document.getElementById('list');
-  const more = document.getElementById('more');
   const count = document.getElementById('count');
+  const sentinel = document.getElementById('sentinel');
 
   const render = items => {
     list.insertAdjacentHTML('beforeend', items.map(recipeCard).join(''));
     offset += items.length;
     count.textContent = `${offset}${items.length === PAGE ? '+' : ''} recipes`;
-    if (items.length < PAGE) more.style.display = 'none';
+    if (items.length < PAGE) {
+      done = true;
+      sentinel.textContent = offset ? 'End of results' : '';
+    }
   };
 
   if (!first.items.length) {
     count.textContent = 'No matches.';
-    more.style.display = 'none';
+    done = true;
   } else render(first.items);
 
-  more.onclick = async () => {
-    more.disabled = true;
-    render((await get(url())).items);
-    more.disabled = false;
+  const loadMore = async () => {
+    if (busy || done) return;
+    busy = true;
+    sentinel.textContent = 'Loading…';
+    try {
+      render((await get(url())).items);
+      if (!done) sentinel.textContent = '';
+    } catch (e) {
+      done = true;
+      sentinel.textContent = `Error: ${e.message}`;
+    }
+    busy = false;
   };
+
+  // Fetch ahead of the viewport so scrolling stays smooth. Re-fires while the
+  // sentinel is still visible, which also fills a short first page.
+  pageObserver = new IntersectionObserver(
+    entries => { if (entries.some(e => e.isIntersecting)) loadMore(); },
+    { rootMargin: '600px' });
+  pageObserver.observe(sentinel);
 }
 
 async function viewBook(id) {
@@ -167,6 +193,7 @@ async function viewRecipe(id) {
 // ----------------------------------------------------------------- router
 
 async function route() {
+  stopPaging();
   const hash = location.hash.replace(/^#/, '') || '/';
   const [path] = hash.split('?');
   const parts = path.split('/').filter(Boolean);

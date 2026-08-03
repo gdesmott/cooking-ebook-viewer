@@ -49,7 +49,10 @@ pub async fn run(db_path: &str, addr: &str) -> Result<()> {
         books,
     });
 
-    let app = Router::new()
+    // The UI and API carry no validators, so browsers heuristically cache them
+    // and keep serving results from before a re-index. Book assets are
+    // immutable for a given path and stay cacheable.
+    let dynamic = Router::new()
         .route("/", get(index_html))
         .route("/app.js", get(app_js))
         .route("/app.css", get(app_css))
@@ -58,15 +61,28 @@ pub async fn run(db_path: &str, addr: &str) -> Result<()> {
         .route("/api/search", get(api_search))
         .route("/api/recipes/{id}", get(api_recipe))
         .route("/api/ingredients", get(api_ingredients))
+        .layer(axum::middleware::from_fn(no_store));
+
+    let assets = Router::new()
         .route("/cover/{book_id}", get(cover))
         .route("/page/{book_id}/{*path}", get(page))
-        .route("/asset/{book_id}/{*path}", get(asset))
-        .with_state(state);
+        .route("/asset/{book_id}/{*path}", get(asset));
+
+    let app = dynamic.merge(assets).with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("Serving {n_books} books on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+async fn no_store(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let mut res = next.run(req).await;
+    res.headers_mut().insert(
+        header::CACHE_CONTROL,
+        HeaderValue::from_static("no-store, must-revalidate"),
+    );
+    res
 }
 
 // ---------------------------------------------------------------- static UI
@@ -224,7 +240,7 @@ async fn api_search(State(st): State<St>, Query(qp): Query<SearchQ>) -> Result<J
         // marks the matched terms in the ingredient list.
         let base = "SELECT r.id, r.title, r.chapter, r.book_id, b.title, r.image, \
              r.yield_text, r.time_text, \
-             fts_highlight(r.title, r.ingredients, r.body, '<mark>', '</mark>', ?3) \
+             fts_highlight(r.title, r.ingredients, r.body, '<mark>', '</mark>', ?4) \
              FROM recipes r JOIN books b ON b.id = r.book_id \
              WHERE fts_match(r.title, r.ingredients, r.body, ?3) \
              AND r.ingredients != ''";
@@ -238,11 +254,12 @@ async fn api_search(State(st): State<St>, Query(qp): Query<SearchQ>) -> Result<J
             Value::Integer(limit),
             Value::Integer(offset),
             Value::Text(build_fts_query(&q)),
+            Value::Text(build_highlight_query(&q)),
         ];
         let sql = match qp.book {
             Some(b) => {
                 prm.push(Value::Integer(b));
-                format!("{base} AND r.book_id = ?4 {order} LIMIT ?1 OFFSET ?2")
+                format!("{base} AND r.book_id = ?5 {order} LIMIT ?1 OFFSET ?2")
             }
             None => format!("{base} {order} LIMIT ?1 OFFSET ?2"),
         };
@@ -270,6 +287,24 @@ fn build_fts_query(input: &str) -> String {
         return q.to_string();
     }
     terms.join(" AND ")
+}
+
+/// Terms only, for `fts_highlight`. It marks whatever it is given, so handing
+/// it the match query would highlight the literal "and" in "Salt and pepper"
+/// and drag the snippet window onto an irrelevant part of the recipe.
+fn build_highlight_query(input: &str) -> String {
+    let terms: Vec<String> = input
+        .split_whitespace()
+        .filter(|t| !matches!(*t, "AND" | "OR" | "NOT"))
+        .map(|t| {
+            let t = t.trim_start_matches(['+', '-']);
+            // Drop a field prefix ("title:harissa") and any phrase quoting.
+            let t = t.split_once(':').map(|(_, r)| r).unwrap_or(t);
+            t.trim_matches('"').to_string()
+        })
+        .filter(|t| !t.is_empty())
+        .collect();
+    terms.join(" ")
 }
 
 /// Trim a highlighted field down to a window around the first match, so cards
