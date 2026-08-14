@@ -113,6 +113,7 @@ h1 { font-size: 1.45rem; margin: 0 0 .2rem; letter-spacing: -.02em; }
 .readerbar { display: flex; align-items: baseline; gap: .8rem; flex-wrap: wrap; }
 .rtitle { font-size: 1.15rem; margin: 0; letter-spacing: -.01em; }
 .readerbar .btn { margin-top: 0; }
+#tocjump { display: none; }          /* the list is already beside the page */
 /* Left-aligned with the rest of the reader, and no trailing gap: every pixel
    here comes straight out of the page pane below. */
 .view-book .marks { flex: none; max-width: none; margin: 0; }
@@ -218,15 +219,28 @@ h1 { font-size: 1.45rem; margin: 0 0 .2rem; letter-spacing: -.02em; }
   color: var(--muted); font-size: .85rem; padding: 1.2rem 0 2rem; }
 
 @media (max-width: 820px) {
-  /* One column and a page that simply scrolls — no viewport-height budget to
-     share out, so drop the flex column too. */
-  .view-book { display: block; height: auto; }
-  .reader { grid-template-columns: 1fr; height: auto; }
-  /* 40vh of contents plus the marks panel pushed the page itself below the
-     fold, so choosing a recipe showed nothing of it. The list still scrolls. */
-  .toc { max-height: 30vh; }
-  .frame { height: 75vh; }
-  .readerbar { margin-bottom: .4rem; }
+  /* The page you came to read goes first and gets the screen. Stacked in
+     source order it started 586px down a 664px viewport — 78px of recipe
+     visible — behind a crumb, the marks panel and a 200px contents list.
+     `display: contents` drops .reader's box so its children join this flex
+     column and can be ordered against the panel that is not inside it. */
+  .view-book { display: flex; flex-direction: column; height: auto; gap: .5rem; }
+  .reader { display: contents; }
+  /* "Books › <title>": the link duplicates the Books tab and the title is not
+     a link, so the row is pure overhead against the page. The book is still
+     named by the contents list heading below. Kept on the recipe page, where
+     the middle segment does link into the book. */
+  .view-book > .crumb { display: none; }
+  .readerbar { order: 2; margin-bottom: 0; }
+  #tocjump { display: inline-block; }
+  .frame { order: 3; height: calc(100vh - 60px); }
+
+  /* Reading is the one place the sticky header costs more than it gives: it
+     covers the top 115px of the page pane as soon as you scroll to it. The
+     tab bar still anchors navigation, and the header returns at the top. */
+  body:has(#view.view-book) .topbar { position: static; }
+  .view-book .marks { order: 4; }
+  .toc { order: 5; max-height: 45vh; }
   .detail { grid-template-columns: 1fr; }
 
   /* The top nav goes; the tab bar below takes over its five destinations. The

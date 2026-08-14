@@ -227,6 +227,9 @@ async function viewBook(id) {
     <div class="readerbar">
       <h2 class="rtitle" id="rtitle"></h2>
       <a class="btn" id="fullrecipe" href="#/">Full recipe →</a>
+      <!-- Phone only: the contents list sits below the page there. A plain
+           href="#toc" would be a hash change, which is this app's router. -->
+      <button class="linkbtn" id="tocjump">Contents ↓</button>
     </div>
     <div id="marks" class="marks"></div>
     <div class="reader">
@@ -257,22 +260,40 @@ async function viewBook(id) {
     renderMarks(rid, r.marks, { compact: true });
   };
 
-  const open = (a, reveal = false) => {
+  // Below 820px the contents list is under the page pane rather than beside it,
+  // which changes what "show me the entry I picked" means.
+  const narrow = () => matchMedia('(max-width: 820px)').matches;
+
+  const open = (a, { reveal = false, picked = false } = {}) => {
     links.forEach(l => l.classList.toggle('on', l === a));
     const anchor = a.dataset.anchor ? '#' + a.dataset.anchor : '';
     frame.src = `/page/${id}/${a.dataset.doc}${anchor}`;
     showMarks(a.dataset.id);
+
+    if (narrow()) {
+      // Picking from the list means scrolling back up to the page — the list
+      // is at the bottom, so otherwise the tap looks like it did nothing. On
+      // arrival the page is already the first thing in view: leave it alone.
+      if (picked) frame.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      return;
+    }
     // Deep-linking to a recipe late in the book otherwise leaves the TOC at the
     // top, so the reader looks like it opened the wrong entry. Only on arrival:
     // scrolling under a click the reader just made would yank the list away.
     if (reveal) a.scrollIntoView({ block: 'center' });
   };
-  links.forEach(a => a.addEventListener('click', e => { e.preventDefault(); open(a); }));
+  links.forEach(a => a.addEventListener('click', e => {
+    e.preventDefault();
+    open(a, { picked: true });
+  }));
+
+  document.getElementById('tocjump').addEventListener('click', () =>
+    view.querySelector('.toc').scrollIntoView({ block: 'start', behavior: 'smooth' }));
 
   // Deep link: #/book/3?r=42 opens that recipe directly.
   const want = new URLSearchParams(location.hash.split('?')[1] || '').get('r');
   const target = want && links.find(l => l.getAttribute('href').endsWith('r=' + want));
-  if (links.length) open(target || links[0], !!target);
+  if (links.length) open(target || links[0], { reveal: !!target });
 }
 
 async function viewRecipe(id) {
