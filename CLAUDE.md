@@ -21,7 +21,9 @@ cargo run --release -- user add <name>         # accounts; also list / passwd / 
 Use `--release`: debug builds parse 61 large zips slowly enough to matter.
 
 There is **no test suite**. Verification is manual: `stats` for extraction
-quality, `curl /api/search` for relevance, and a browser for the UI.
+quality, `curl /api/search` for relevance, and a browser for the UI — for which
+the **`ui-test` skill** (`.claude/skills/ui-test/`) has the whole procedure:
+throwaway server and account, a Playwright harness to copy, and teardown.
 
 ### Gotchas when iterating
 
@@ -38,8 +40,9 @@ quality, `curl /api/search` for relevance, and a browser for the UI.
 
 - **`library.db`** (Turso) — derived from the epubs, rebuilt from scratch by
   every `index`, gitignored. Never store anything authored here.
-- **`auth.db`** (plain SQLite, `src/auth.rs`) — accounts and sessions, and the
-  right home for future user-owned data (notes, tags, favourites).
+- **`auth.db`** (plain SQLite, `src/auth.rs`) — accounts and sessions, plus all
+  user-owned data: the cook log, favourites, tags and notes (`src/marks.rs`).
+  Anything else durable and user-authored belongs here too.
 
 They are deliberately different engines. Turso holds an **exclusive file lock
 for the lifetime of a connection**, so with Turso the running server made
@@ -58,10 +61,27 @@ form. Passwords are Argon2id; sessions are random 32-byte tokens in an
 When adding a route, put it inside the protected router unless it genuinely
 must be public, and keep the `no_store` vs cacheable split correct.
 
-Note that **recipe ids are reassigned on every re-index** (the indexer numbers
-them sequentially). Before building notes/tags/favourites, give recipes a stable
-key — book filename plus doc plus anchor, say — or user data will silently point
-at the wrong recipes after the next index.
+## User marks (`src/marks.rs`)
+
+Cook log, favourites, tags and a free-form note, one set per (user, recipe).
+
+**Recipe ids are reassigned on every re-index** — the indexer numbers them
+sequentially — so nothing user-owned may be stored against `recipes.id`. Marks
+are keyed by `server::recipe_key`: `filename|doc|anchor`, all from the epub, all
+stable across a rebuild. `AppState.keys`/`ids` map both ways and are built once
+at startup (the server holds `library.db` locked for its lifetime, so it cannot
+change underneath). Startup warns if two recipes collide on one key; the current
+corpus has none.
+
+Every write endpoint answers with the recipe's full updated marks, so the
+frontend re-renders from the server rather than tracking state itself. Listing
+endpoints (`/api/history`, `/api/favorites`, `/api/tags/{tag}`) read keys from
+`auth.db`, then `cards_for_keys` fetches the cards from `library.db` and
+restores the order — `IN (...)` does not preserve it. A key with no matching
+recipe is skipped, not an error: the mark outlives a book leaving the library.
+
+The auth connection is behind a `Mutex`; take the guard in a scope and drop it
+before any `.await` (see `with_marks`).
 
 ## Turso, and how it differs from SQLite
 
@@ -87,6 +107,7 @@ of truth to be migrated.
 
 ```
 src/auth.rs      accounts, Argon2id hashing, sessions (plain SQLite)
+src/marks.rs     cook log, favourites, tags, notes (same SQLite db)
 src/epub.rs      zip access, OPF metadata, NCX/nav TOC parsing
 src/extract.rs   TOC -> recipes; ingredient/body/meta classification
 src/db.rs        schema + FTS index DDL + Value accessors

@@ -4,13 +4,14 @@
 use crate::auth;
 use crate::db;
 use crate::epub::{Epub, resolve};
+use crate::marks;
 use anyhow::Result;
 use axum::{
     Router,
     extract::{Path, Query, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{Html, IntoResponse, Json, Response},
-    routing::get,
+    routing::{delete, get, post},
 };
 use serde::Serialize;
 use serde_json::{Value as J, json};
@@ -26,6 +27,18 @@ struct AppState {
     secure_cookie: bool,
     /// book id -> epub path on disk, resolved once at startup.
     books: HashMap<i64, std::path::PathBuf>,
+    /// recipe id -> stable key, and back. User marks are stored against the
+    /// key, because ids are reassigned by every re-index. Resolved once at
+    /// startup: Turso holds the library file locked for the life of the
+    /// connection, so it cannot change underneath a running server.
+    keys: HashMap<i64, String>,
+    ids: HashMap<String, i64>,
+}
+
+/// The identity of a recipe that survives a re-index: which epub, which
+/// document inside it, and which anchor within that document. See `marks`.
+fn recipe_key(filename: &str, doc: &str, anchor: Option<&str>) -> String {
+    format!("{filename}|{doc}|{}", anchor.unwrap_or(""))
 }
 
 type St = Arc<AppState>;
@@ -44,6 +57,36 @@ pub async fn run(db_path: &str, auth_db: &str, addr: &str, secure_cookie: bool) 
     let n_books = books.len();
     drop(rows);
 
+    let mut keys = HashMap::new();
+    let mut ids = HashMap::new();
+    let mut rows = conn
+        .query(
+            "SELECT r.id, b.filename, r.doc, r.anchor FROM recipes r \
+             JOIN books b ON b.id = r.book_id",
+            (),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        let id = db::val_i64(&row.get_value(0)?).unwrap_or_default();
+        let key = recipe_key(
+            &db::val_str(&row.get_value(1)?).unwrap_or_default(),
+            &db::val_str(&row.get_value(2)?).unwrap_or_default(),
+            db::val_str(&row.get_value(3)?).as_deref(),
+        );
+        ids.insert(key.clone(), id);
+        keys.insert(id, key);
+    }
+    drop(rows);
+    // Two recipes sharing a key would share each other's marks. That means a
+    // book put several TOC entries in one document without anchors to tell
+    // them apart; say so rather than silently merging them.
+    if ids.len() < keys.len() {
+        println!(
+            "WARNING: {} recipes share a stable key with another and will share marks",
+            keys.len() - ids.len()
+        );
+    }
+
     let database = turso::Builder::new_local(db_path)
         .experimental_index_method(true)
         .build()
@@ -57,6 +100,8 @@ pub async fn run(db_path: &str, auth_db: &str, addr: &str, secure_cookie: bool) 
         auth: std::sync::Mutex::new(auth_conn),
         secure_cookie,
         books,
+        keys,
+        ids,
     });
 
     // The UI and API carry no validators, so browsers heuristically cache them
@@ -72,6 +117,17 @@ pub async fn run(db_path: &str, auth_db: &str, addr: &str, secure_cookie: bool) 
         .route("/api/search", get(api_search))
         .route("/api/recipes/{id}", get(api_recipe))
         .route("/api/ingredients", get(api_ingredients))
+        // Per-user marks: cooked, favourite, tags, comment.
+        .route("/api/recipes/{id}/cook", post(api_cook))
+        .route("/api/recipes/{id}/cook/{entry}", delete(api_uncook))
+        .route("/api/recipes/{id}/favorite", post(api_favorite))
+        .route("/api/recipes/{id}/comment", post(api_comment))
+        .route("/api/recipes/{id}/tags", post(api_add_tag))
+        .route("/api/recipes/{id}/tags/{tag}", delete(api_remove_tag))
+        .route("/api/history", get(api_history))
+        .route("/api/favorites", get(api_favorites))
+        .route("/api/tags", get(api_tags))
+        .route("/api/tags/{tag}", get(api_tagged))
         .layer(axum::middleware::from_fn(no_store));
 
     let assets = Router::new()
@@ -388,7 +444,11 @@ struct SearchQ {
     sort: Option<String>,
 }
 
-async fn api_search(State(st): State<St>, Query(qp): Query<SearchQ>) -> Result<Json<J>, AppError> {
+async fn api_search(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Query(qp): Query<SearchQ>,
+) -> Result<Json<J>, AppError> {
     let conn = st.db.connect()?;
     let limit = qp.limit.unwrap_or(60).clamp(1, 300);
     let offset = qp.offset.unwrap_or(0).max(0);
@@ -417,7 +477,7 @@ async fn api_search(State(st): State<St>, Query(qp): Query<SearchQ>) -> Result<J
         };
         let mut rows = conn.query(sql, prm).await?;
         while let Some(r) = rows.next().await? {
-            items.push(hit_json(&r)?);
+            items.push(hit_json(&st, &r)?);
         }
     } else {
         // Turso FTS: fts_match filters, fts_score ranks (BM25), fts_highlight
@@ -449,11 +509,37 @@ async fn api_search(State(st): State<St>, Query(qp): Query<SearchQ>) -> Result<J
         };
         let mut rows = conn.query(&sql, prm).await?;
         while let Some(r) = rows.next().await? {
-            items.push(hit_json(&r)?);
+            items.push(hit_json(&st, &r)?);
         }
     }
 
+    badge(&st, user.id, &mut items)?;
     Ok(Json(json!({ "items": items, "q": q, "offset": offset })))
+}
+
+/// Flag which of these cards the user has favourited or already cooked. Both
+/// sets are one user's own marks, small enough to load per request.
+fn badge(st: &St, user_id: i64, items: &mut [J]) -> Result<(), AppError> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let (favs, cooked) = {
+        let conn = st.auth.lock().expect("auth db mutex");
+        (
+            marks::favorite_keys(&conn, user_id)?,
+            marks::cooked_keys(&conn, user_id)?,
+        )
+    };
+    for it in items {
+        let key = it
+            .get("key")
+            .and_then(|k| k.as_str())
+            .unwrap_or_default()
+            .to_string();
+        it["fav"] = json!(favs.contains(&key));
+        it["cooked"] = json!(cooked.contains(&key));
+    }
+    Ok(())
 }
 
 /// Tantivy's query parser ORs bare terms, so "air fryer" matches any recipe
@@ -528,9 +614,11 @@ fn make_snippet(s: Option<String>) -> Option<String> {
     Some(format!("{prefix}{}{suffix}", out.trim()))
 }
 
-fn hit_json(r: &turso::Row) -> Result<J, AppError> {
+fn hit_json(st: &St, r: &turso::Row) -> Result<J, AppError> {
+    let id = db::val_i64(&r.get_value(0)?).unwrap_or_default();
     Ok(json!({
-        "id": db::val_i64(&r.get_value(0)?),
+        "id": id,
+        "key": st.keys.get(&id),
         "title": db::val_str(&r.get_value(1)?),
         "chapter": db::val_str(&r.get_value(2)?),
         "book_id": db::val_i64(&r.get_value(3)?),
@@ -542,7 +630,11 @@ fn hit_json(r: &turso::Row) -> Result<J, AppError> {
     }))
 }
 
-async fn api_recipe(State(st): State<St>, Path(id): Path<i64>) -> Result<Json<J>, AppError> {
+async fn api_recipe(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Path(id): Path<i64>,
+) -> Result<Json<J>, AppError> {
     let conn = st.db.connect()?;
     let mut rows = conn
         .query(
@@ -561,8 +653,14 @@ async fn api_recipe(State(st): State<St>, Path(id): Path<i64>) -> Result<Json<J>
         .map(|s| s.to_string())
         .filter(|s| !s.is_empty())
         .collect();
+    let key = key_of(&st, id)?;
+    let m = {
+        let auth_conn = st.auth.lock().expect("auth db mutex");
+        marks::get(&auth_conn, user.id, &key)?
+    };
     Ok(Json(json!({
         "id": db::val_i64(&r.get_value(0)?),
+        "key": key,
         "title": db::val_str(&r.get_value(1)?),
         "chapter": db::val_str(&r.get_value(2)?),
         "book_id": db::val_i64(&r.get_value(3)?),
@@ -574,7 +672,263 @@ async fn api_recipe(State(st): State<St>, Path(id): Path<i64>) -> Result<Json<J>
         "time": db::val_str(&r.get_value(9)?),
         "ingredients": ingredients,
         "body": db::val_str(&r.get_value(11)?),
+        "marks": m,
     })))
+}
+
+// -------------------------------------------------------------- user marks
+
+/// The stable key for a recipe id, resolved from the map built at startup.
+fn key_of(st: &St, id: i64) -> Result<String, AppError> {
+    st.keys
+        .get(&id)
+        .cloned()
+        .ok_or_else(|| AppError(anyhow::anyhow!("no such recipe")))
+}
+
+/// Run a closure against the accounts database and return the recipe's marks.
+/// The guard is taken and dropped inside, so no `MutexGuard` is ever held
+/// across an await - the future would stop being `Send`.
+fn with_marks<F>(st: &St, user_id: i64, key: &str, f: F) -> Result<Json<J>, AppError>
+where
+    F: FnOnce(&rusqlite::Connection) -> Result<()>,
+{
+    let m = {
+        let conn = st.auth.lock().expect("auth db mutex");
+        f(&conn)?;
+        marks::get(&conn, user_id, key)?
+    };
+    Ok(Json(json!(m)))
+}
+
+#[derive(serde::Deserialize)]
+struct CookBody {
+    /// Unix timestamp; defaults to now, so the UI can backdate an entry.
+    at: Option<i64>,
+}
+
+async fn api_cook(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Path(id): Path<i64>,
+    body: Option<Json<CookBody>>,
+) -> Result<Json<J>, AppError> {
+    let key = key_of(&st, id)?;
+    let at = body.and_then(|Json(b)| b.at).unwrap_or_else(auth::now);
+    with_marks(&st, user.id, &key, |c| {
+        marks::add_cook(c, user.id, &key, at).map(|_| ())
+    })
+}
+
+async fn api_uncook(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Path((id, entry)): Path<(i64, i64)>,
+) -> Result<Json<J>, AppError> {
+    let key = key_of(&st, id)?;
+    with_marks(&st, user.id, &key, |c| {
+        marks::remove_cook(c, user.id, entry)
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct FavoriteBody {
+    on: bool,
+}
+
+async fn api_favorite(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Path(id): Path<i64>,
+    Json(b): Json<FavoriteBody>,
+) -> Result<Json<J>, AppError> {
+    let key = key_of(&st, id)?;
+    with_marks(&st, user.id, &key, |c| {
+        marks::set_favorite(c, user.id, &key, b.on)
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct CommentBody {
+    text: String,
+}
+
+async fn api_comment(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Path(id): Path<i64>,
+    Json(b): Json<CommentBody>,
+) -> Result<Json<J>, AppError> {
+    let key = key_of(&st, id)?;
+    with_marks(&st, user.id, &key, |c| {
+        marks::set_comment(c, user.id, &key, &b.text)
+    })
+}
+
+#[derive(serde::Deserialize)]
+struct TagBody {
+    tag: String,
+}
+
+async fn api_add_tag(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Path(id): Path<i64>,
+    Json(b): Json<TagBody>,
+) -> Result<Json<J>, AppError> {
+    let key = key_of(&st, id)?;
+    with_marks(&st, user.id, &key, |c| {
+        marks::add_tag(c, user.id, &key, &b.tag)
+    })
+}
+
+async fn api_remove_tag(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Path((id, tag)): Path<(i64, String)>,
+) -> Result<Json<J>, AppError> {
+    let key = key_of(&st, id)?;
+    with_marks(&st, user.id, &key, |c| {
+        marks::remove_tag(c, user.id, &key, &tag)
+    })
+}
+
+/// Recipe cards for a list of stable keys, in the order given. Keys whose
+/// recipe is gone - the epub was removed from the library, say - are skipped
+/// rather than erroring: the mark outlives the book.
+async fn cards_for_keys(st: &St, keys: &[String]) -> Result<Vec<J>, AppError> {
+    let pairs: Vec<(i64, &String)> = keys
+        .iter()
+        .filter_map(|k| st.ids.get(k).map(|id| (*id, k)))
+        .collect();
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let placeholders = (1..=pairs.len())
+        .map(|i| format!("?{i}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT r.id, r.title, r.chapter, r.book_id, b.title, r.image, \
+         r.yield_text, r.time_text, '' \
+         FROM recipes r JOIN books b ON b.id = r.book_id WHERE r.id IN ({placeholders})"
+    );
+    let prm: Vec<Value> = pairs.iter().map(|(id, _)| Value::Integer(*id)).collect();
+
+    let conn = st.db.connect()?;
+    let mut rows = conn.query(&sql, prm).await?;
+    let mut by_id: HashMap<i64, J> = HashMap::new();
+    while let Some(r) = rows.next().await? {
+        let card = hit_json(st, &r)?;
+        if let Some(id) = card.get("id").and_then(|v| v.as_i64()) {
+            by_id.insert(id, card);
+        }
+    }
+
+    // `IN` gives no ordering guarantee, so restore the caller's order here.
+    Ok(pairs
+        .iter()
+        .filter_map(|(id, _)| by_id.get(id).cloned())
+        .collect())
+}
+
+#[derive(serde::Deserialize)]
+struct PageQ {
+    limit: Option<i64>,
+    offset: Option<i64>,
+}
+
+impl PageQ {
+    fn bounds(&self, default: i64) -> (i64, i64) {
+        (
+            self.limit.unwrap_or(default).clamp(1, 300),
+            self.offset.unwrap_or(0).max(0),
+        )
+    }
+}
+
+/// The cook log: every session, newest first, with the recipe it was for.
+async fn api_history(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Query(qp): Query<PageQ>,
+) -> Result<Json<J>, AppError> {
+    let (limit, offset) = qp.bounds(60);
+    let entries = {
+        let conn = st.auth.lock().expect("auth db mutex");
+        marks::history(&conn, user.id, limit, offset)?
+    };
+
+    let keys: Vec<String> = entries.iter().map(|e| e.key.clone()).collect();
+    let cards = cards_for_keys(&st, &keys).await?;
+    let by_key: HashMap<&str, &J> = cards
+        .iter()
+        .filter_map(|c| c.get("key").and_then(|k| k.as_str()).map(|k| (k, c)))
+        .collect();
+
+    // One item per cooking session: the same recipe appears once per time it
+    // was cooked, which is the point of a history.
+    let mut items = Vec::new();
+    for e in &entries {
+        let Some(card) = by_key.get(e.key.as_str()) else {
+            continue;
+        };
+        let mut item = (*card).clone();
+        item["entry_id"] = json!(e.id);
+        item["cooked_at"] = json!(e.at);
+        items.push(item);
+    }
+    badge(&st, user.id, &mut items)?;
+    Ok(Json(json!({ "items": items, "offset": offset })))
+}
+
+async fn api_favorites(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Query(qp): Query<PageQ>,
+) -> Result<Json<J>, AppError> {
+    let (limit, offset) = qp.bounds(60);
+    let keys = {
+        let conn = st.auth.lock().expect("auth db mutex");
+        marks::favorites(&conn, user.id, limit, offset)?
+    };
+    let mut items = cards_for_keys(&st, &keys).await?;
+    badge(&st, user.id, &mut items)?;
+    Ok(Json(json!({ "items": items, "offset": offset })))
+}
+
+async fn api_tags(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+) -> Result<Json<J>, AppError> {
+    let tags = {
+        let conn = st.auth.lock().expect("auth db mutex");
+        marks::tag_counts(&conn, user.id)?
+    };
+    let items: Vec<J> = tags
+        .into_iter()
+        .map(|(tag, n)| json!({ "tag": tag, "count": n }))
+        .collect();
+    Ok(Json(json!({ "items": items })))
+}
+
+async fn api_tagged(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+    Path(tag): Path<String>,
+    Query(qp): Query<PageQ>,
+) -> Result<Json<J>, AppError> {
+    let (limit, offset) = qp.bounds(60);
+    let keys = {
+        let conn = st.auth.lock().expect("auth db mutex");
+        marks::tagged(&conn, user.id, &tag, limit, offset)?
+    };
+    let mut items = cards_for_keys(&st, &keys).await?;
+    badge(&st, user.id, &mut items)?;
+    Ok(Json(
+        json!({ "items": items, "tag": marks::normalize_tag(&tag), "offset": offset }),
+    ))
 }
 
 /// Most common ingredient lines, for the ingredient browser.

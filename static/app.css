@@ -116,6 +116,8 @@ h1 { font-size: 1.45rem; margin: 0 0 .2rem; letter-spacing: -.02em; }
   background: #fff; box-shadow: var(--shadow); }
 
 /* ------------------------------------------------------- recipe detail */
+/* The heading shares the body's column, or it hangs off to the left of it. */
+.rhead { max-width: 62rem; margin: 0 auto; }
 .detail { max-width: 62rem; margin: 0 auto; display: grid; grid-template-columns: 1fr 1.3fr; gap: 2rem; }
 .detail .hero { width: 100%; border-radius: var(--radius); box-shadow: var(--shadow); }
 .detail ul { padding-left: 1.1rem; margin: .4rem 0 1.2rem; }
@@ -125,6 +127,76 @@ h1 { font-size: 1.45rem; margin: 0 0 .2rem; letter-spacing: -.02em; }
   background: var(--accent); color: #fff; font-size: .85rem; font-weight: 600; }
 .crumb { font-size: .85rem; color: var(--muted); margin-bottom: .5rem; }
 .crumb a:hover { color: var(--accent); }
+
+/* --------------------------------------------------------- marks & tags */
+.rcard .badge { font-size: .78rem; margin-left: .35rem; color: var(--accent); }
+
+.marks { max-width: 62rem; margin: 0 auto 1.4rem; }
+.markbar { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+.mbtn {
+  font: inherit; font-size: .85rem; font-weight: 600; cursor: pointer;
+  padding: .4rem .9rem; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--panel); color: var(--text);
+}
+.mbtn:hover { border-color: var(--accent); color: var(--accent); }
+.mbtn.cook { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mbtn.cook:hover { color: #fff; filter: brightness(1.08); }
+.mbtn.fav.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.cooknote { font-size: .82rem; color: var(--muted); }
+
+.tagrow { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; margin-top: .7rem; }
+.tag {
+  display: inline-flex; align-items: center; gap: .3rem;
+  font-size: .78rem; padding: .12rem .55rem; border-radius: 999px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.tag .n { color: var(--muted); font-variant-numeric: tabular-nums; }
+.tag .x, .chip .x {
+  font: inherit; line-height: 1; cursor: pointer; padding: 0;
+  border: 0; background: none; color: inherit; opacity: .6;
+}
+.tag .x:hover, .chip .x:hover { opacity: 1; }
+.tagadd input {
+  font: inherit; font-size: .78rem; width: 7rem; padding: .12rem .6rem;
+  border: 1px dashed var(--line); border-radius: 999px;
+  background: transparent; color: var(--text);
+}
+.tagadd input:focus { outline: none; border-color: var(--accent); border-style: solid; }
+.tagcloud { display: flex; flex-wrap: wrap; gap: .5rem; }
+.tagcloud .tag { font-size: .88rem; padding: .25rem .8rem; }
+
+.notes { margin-top: .8rem; font-size: .85rem; }
+.notes summary { cursor: pointer; color: var(--muted); }
+.notes textarea {
+  display: block; width: 100%; margin-top: .5rem; padding: .6rem .7rem;
+  font: inherit; resize: vertical;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius);
+}
+.notes textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+.saved { font-size: .75rem; color: var(--muted); }
+
+.cooklog { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .7rem; }
+.chip {
+  display: inline-flex; align-items: center; gap: .35rem;
+  font-size: .74rem; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px; padding: .1rem .55rem;
+}
+
+/* --------------------------------------------------------- cook history */
+/* One row per session, so the list keeps a reading width rather than spanning
+   the page like the card grids do. Centre the whole view with it — the list
+   alone, flush left under a full-width heading, reads as broken rather than
+   as a deliberate cap. Same idiom as `.rhead`/`.detail` on a recipe. */
+.hlist { display: flex; flex-direction: column; gap: .6rem; }
+.view-history > * { max-width: 52rem; margin-inline: auto; }
+.hrow { display: flex; align-items: center; gap: 1rem; }
+.hrow .hdate { flex: none; width: 7.5rem; font-size: .76rem; color: var(--muted);
+  text-transform: uppercase; letter-spacing: .06em; }
+.hrow .rcard { flex: 1; min-width: 0; }
+.linkbtn { flex: none; font: inherit; font-size: .78rem; cursor: pointer;
+  background: none; border: 0; color: var(--muted); text-decoration: underline; }
+.linkbtn:hover { color: var(--accent); }
 
 .loading { color: var(--muted); padding: 2rem 0; }
 .sentinel { min-height: 3rem; display: flex; align-items: center; justify-content: center;

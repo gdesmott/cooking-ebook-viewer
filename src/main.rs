@@ -3,6 +3,7 @@ mod db;
 mod epub;
 mod extract;
 mod indexer;
+mod marks;
 mod server;
 
 use crate::auth::DEFAULT_AUTH_DB;

@@ -7,6 +7,8 @@ cookbooks from a Humble Bundle, in the original test setup.
 - **Global recipe index** across every book (~4,900 recipes).
 - **Full-text search** over recipe titles, ingredients and instructions, with
   the matching ingredient highlighted in the result.
+- **Mark what you cook** — a cook log with a history view, favourites, your own
+  tags and free-form notes, all per account.
 
 Books are never unpacked: pages and images are read straight out of the `.epub`
 zips at request time, so the 12 GB library stays where it is.
@@ -52,15 +54,32 @@ changing the password or removing the user. Add `--secure-cookie` when serving
 behind HTTPS so the cookie is not sent over plain HTTP.
 
 Accounts live in **`auth.db`, separate from `library.db`** — indexing rebuilds
-the library from scratch every run and would otherwise wipe them. Anything
-durable and user-owned (notes, tags, favourites) belongs there too. Unlike the
-library, it is plain SQLite: Turso holds an exclusive lock for the lifetime of a
-connection, which would stop the CLI from adding a user while the server runs.
+the library from scratch every run and would otherwise wipe them. Everything
+else that is durable and user-owned — the cook log, favourites, tags and notes —
+lives there too. Unlike the library, it is plain SQLite: Turso holds an exclusive
+lock for the lifetime of a connection, which would stop the CLI from adding a
+user while the server runs.
 
 The NAS (or wherever the epubs live) must be mounted when the server runs, since
 images are streamed from the archives on demand. `library.db` is a derived
 artifact — delete it and re-run `index` at any time. `auth.db` is not: it holds
 your accounts.
+
+## Marking recipes
+
+Open a recipe and you can record that you **cooked it** (once per session, so
+the history shows every time), mark it a **favourite**, give it your own
+**tags**, and keep **notes** on it — tweaks, timings, who liked it. The
+Favourites, History and Tags views in the header find them again, and search
+results are badged with ♥ and 🍳 for what you have already loved or cooked.
+
+Marks are per account and stored in `auth.db`, keyed by a **stable recipe
+key** — `filename|document|anchor`, taken from the epub itself. `recipes.id` is
+*not* usable for this: the indexer numbers recipes sequentially, so every
+re-index reassigns the ids and anything stored against them would quietly point
+at the wrong recipe afterwards. The key survives a rebuild; only editing the
+epub file or changing the extraction heuristics can break it, and then the mark
+is simply skipped rather than shown against something else.
 
 ## Database
 
@@ -139,6 +158,7 @@ the recipe index and search results.
 
 ```
 src/auth.rs      accounts, password hashing, sessions (separate SQLite db)
+src/marks.rs     cook log, favourites, tags, notes — same SQLite db
 src/epub.rs      zip + OPF metadata + NCX/nav table of contents
 src/extract.rs   recipe extraction heuristics
 src/db.rs        Turso schema, FTS index

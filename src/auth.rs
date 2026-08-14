@@ -2,8 +2,8 @@
 //!
 //! These live in their own database, *not* in `library.db`: indexing rebuilds
 //! the library from scratch every run, which would wipe any accounts stored
-//! there. Anything durable and user-owned (notes, tags, favourites later)
-//! belongs here.
+//! there. Everything durable and user-owned belongs here: the cook log,
+//! favourites, tags and notes live in `marks`, on the same connection.
 //!
 //! This one is plain SQLite rather than Turso. Turso takes an exclusive lock
 //! on the file for the lifetime of the connection, so `user add` would fail
@@ -56,6 +56,8 @@ pub fn open(path: &str) -> Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
     conn.execute_batch(SCHEMA)?;
+    // Per-user recipe marks live in the same database, for the same reason.
+    conn.execute_batch(crate::marks::SCHEMA)?;
     Ok(conn)
 }
 
@@ -136,6 +138,14 @@ pub fn remove_user(conn: &Connection, username: &str) -> Result<()> {
         bail!("no such user: {username}");
     };
     conn.execute("DELETE FROM sessions WHERE user_id = ?1", params![id])?;
+    // Their marks go too, or they sit orphaned forever - and a later account
+    // reusing the id would inherit them.
+    for table in ["recipe_marks", "cook_log", "recipe_tags"] {
+        conn.execute(
+            &format!("DELETE FROM {table} WHERE user_id = ?1"),
+            params![id],
+        )?;
+    }
     conn.execute("DELETE FROM users WHERE id = ?1", params![id])?;
     Ok(())
 }
