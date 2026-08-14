@@ -13,7 +13,7 @@ zips at request time, so the 12 GB library stays where it is.
 
 ## Setup
 
-Two commands. The only requirement is a Rust toolchain.
+The only requirement is a Rust toolchain.
 
 ```sh
 cargo run --release -- index --library ~/books   # build library.db (~3 min for 61 books)
@@ -31,9 +31,36 @@ cargo run --release -- serve --db mylib.db --addr 0.0.0.0:8080
 `cargo run --release -- stats` reports extraction quality: how many entries came
 out without an ingredient list, and which ones.
 
+## Accounts
+
+Everything except the login form requires a signed-in session, so the library
+isn't publicly readable. There is no sign-up page; accounts are managed from the
+command line, and this works **while the server is running**:
+
+```sh
+cargo run --release -- user add <name>      # prompts for a password, twice
+cargo run --release -- user list
+cargo run --release -- user passwd <name>   # also signs out that user's sessions
+cargo run --release -- user rm <name>
+```
+
+Piping a password works too, for scripts: `echo 'pw' | ... user add bob`.
+
+Passwords are stored as Argon2id hashes. Sessions are random 32-byte tokens in
+an `HttpOnly`, `SameSite=Lax` cookie, valid for 30 days and revocable by
+changing the password or removing the user. Add `--secure-cookie` when serving
+behind HTTPS so the cookie is not sent over plain HTTP.
+
+Accounts live in **`auth.db`, separate from `library.db`** — indexing rebuilds
+the library from scratch every run and would otherwise wipe them. Anything
+durable and user-owned (notes, tags, favourites) belongs there too. Unlike the
+library, it is plain SQLite: Turso holds an exclusive lock for the lifetime of a
+connection, which would stop the CLI from adding a user while the server runs.
+
 The NAS (or wherever the epubs live) must be mounted when the server runs, since
-images are streamed from the archives on demand. The database itself is a
-derived artifact — delete it and re-run `index` at any time.
+images are streamed from the archives on demand. `library.db` is a derived
+artifact — delete it and re-run `index` at any time. `auth.db` is not: it holds
+your accounts.
 
 ## Database
 
@@ -111,6 +138,7 @@ the recipe index and search results.
 ## Layout
 
 ```
+src/auth.rs      accounts, password hashing, sessions (separate SQLite db)
 src/epub.rs      zip + OPF metadata + NCX/nav table of contents
 src/extract.rs   recipe extraction heuristics
 src/db.rs        Turso schema, FTS index

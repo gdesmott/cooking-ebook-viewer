@@ -2,3 +2,6 @@
 library.db
 library.db-wal
 library.db-shm
+auth.db
+auth.db-wal
+auth.db-shm

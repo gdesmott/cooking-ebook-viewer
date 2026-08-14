@@ -1,6 +1,7 @@
 //! Axum HTTP server. Book pages and images are streamed straight out of the
 //! epub zips on demand, so nothing is unpacked to disk.
 
+use crate::auth;
 use crate::db;
 use crate::epub::{Epub, resolve};
 use anyhow::Result;
@@ -19,13 +20,17 @@ use turso::{Database, Value, params};
 
 struct AppState {
     db: Database,
+    /// Accounts and sessions; a separate SQLite database from the library,
+    /// which is rebuilt from scratch on every index.
+    auth: std::sync::Mutex<rusqlite::Connection>,
+    secure_cookie: bool,
     /// book id -> epub path on disk, resolved once at startup.
     books: HashMap<i64, std::path::PathBuf>,
 }
 
 type St = Arc<AppState>;
 
-pub async fn run(db_path: &str, addr: &str) -> Result<()> {
+pub async fn run(db_path: &str, auth_db: &str, addr: &str, secure_cookie: bool) -> Result<()> {
     let conn = db::open(db_path).await?;
 
     let mut books = HashMap::new();
@@ -44,8 +49,13 @@ pub async fn run(db_path: &str, addr: &str) -> Result<()> {
         .build()
         .await?;
 
+    let auth_conn = auth::open(auth_db)?;
+    let n_users = auth::count_users(&auth_conn)?;
+
     let state: St = Arc::new(AppState {
         db: database,
+        auth: std::sync::Mutex::new(auth_conn),
+        secure_cookie,
         books,
     });
 
@@ -56,6 +66,7 @@ pub async fn run(db_path: &str, addr: &str) -> Result<()> {
         .route("/", get(index_html))
         .route("/app.js", get(app_js))
         .route("/app.css", get(app_css))
+        .route("/api/me", get(api_me))
         .route("/api/books", get(api_books))
         .route("/api/books/{id}/toc", get(api_book_toc))
         .route("/api/search", get(api_search))
@@ -68,12 +79,185 @@ pub async fn run(db_path: &str, addr: &str) -> Result<()> {
         .route("/page/{book_id}/{*path}", get(page))
         .route("/asset/{book_id}/{*path}", get(asset));
 
-    let app = dynamic.merge(assets).with_state(state);
+    // Everything above requires a session. Only the login form is public.
+    let protected = dynamic
+        .merge(assets)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_auth,
+        ));
+
+    let public = Router::new()
+        .route("/login", get(login_page).post(login_submit))
+        .route("/logout", axum::routing::post(logout))
+        .layer(axum::middleware::from_fn(no_store));
+
+    let app = protected.merge(public).with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     println!("Serving {n_books} books on http://{addr}");
+    if n_users == 0 {
+        println!(
+            "WARNING: no accounts exist, so nobody can sign in.\n\
+             Create one with: cooking-ebook-viewer user add <name>"
+        );
+    }
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+// ----------------------------------------------------------------------- auth
+
+/// Gate every content route on a valid session. API routes get a 401 so the
+/// frontend can react; page requests are redirected to the login form.
+async fn require_auth(
+    State(st): State<St>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let token = auth::token_from_cookies(
+        req.headers()
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok()),
+    )
+    .unwrap_or_default();
+
+    // Scoped so the guard is dropped before the await below.
+    let user = {
+        let conn = st.auth.lock().expect("auth db mutex");
+        auth::session_user(&conn, &token).ok().flatten()
+    };
+
+    let Some(user) = user else {
+        let path = req.uri().path();
+        if path.starts_with("/api/") {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(json!({ "error": "unauthorized" })),
+            )
+                .into_response();
+        }
+        let next_to = req
+            .uri()
+            .path_and_query()
+            .map(|p| p.as_str())
+            .unwrap_or("/");
+        let location = format!("/login?next={}", urlencode(next_to));
+        return (
+            StatusCode::SEE_OTHER,
+            [(header::LOCATION, location)],
+            "Sign in required",
+        )
+            .into_response();
+    };
+
+    let mut req = req;
+    req.extensions_mut().insert(user);
+    next.run(req).await
+}
+
+fn urlencode(s: &str) -> String {
+    percent_encoding::utf8_percent_encode(s, percent_encoding::NON_ALPHANUMERIC).to_string()
+}
+
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Only ever redirect within this site.
+fn safe_next(next: &str) -> String {
+    if next.starts_with('/') && !next.starts_with("//") {
+        next.to_string()
+    } else {
+        "/".to_string()
+    }
+}
+
+fn render_login(next: &str, error: Option<&str>) -> Html<String> {
+    let page = include_str!("../static/login.html")
+        .replace("<!--NEXT-->", &html_escape(&safe_next(next)))
+        .replace(
+            "<!--ERROR-->",
+            &error
+                .map(|e| format!("<p class=\"error\">{}</p>", html_escape(e)))
+                .unwrap_or_default(),
+        );
+    Html(page)
+}
+
+#[derive(serde::Deserialize)]
+struct NextQ {
+    next: Option<String>,
+}
+
+async fn login_page(Query(q): Query<NextQ>) -> Response {
+    render_login(&q.next.unwrap_or_else(|| "/".into()), None).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct LoginForm {
+    username: String,
+    password: String,
+    next: Option<String>,
+}
+
+async fn login_submit(
+    State(st): State<St>,
+    axum::extract::Form(f): axum::extract::Form<LoginForm>,
+) -> Response {
+    let next = safe_next(f.next.as_deref().unwrap_or("/"));
+
+    let result = {
+        let conn = st.auth.lock().expect("auth db mutex");
+        auth::login(&conn, &f.username, &f.password)
+    };
+
+    match result {
+        Ok(Some(token)) => (
+            StatusCode::SEE_OTHER,
+            [
+                (header::LOCATION, next),
+                (
+                    header::SET_COOKIE,
+                    auth::set_cookie(&token, st.secure_cookie),
+                ),
+            ],
+            "Signed in",
+        )
+            .into_response(),
+        Ok(None) => (
+            StatusCode::UNAUTHORIZED,
+            render_login(&next, Some("Incorrect username or password.")),
+        )
+            .into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("{e}")).into_response(),
+    }
+}
+
+async fn logout(State(st): State<St>, headers: HeaderMap) -> Response {
+    let token = auth::token_from_cookies(headers.get(header::COOKIE).and_then(|v| v.to_str().ok()))
+        .unwrap_or_default();
+    {
+        let conn = st.auth.lock().expect("auth db mutex");
+        let _ = auth::logout(&conn, &token);
+    }
+    (
+        StatusCode::SEE_OTHER,
+        [
+            (header::LOCATION, "/login".to_string()),
+            (header::SET_COOKIE, auth::clear_cookie(st.secure_cookie)),
+        ],
+        "Signed out",
+    )
+        .into_response()
+}
+
+/// Who am I — lets the UI show the signed-in user.
+async fn api_me(axum::Extension(user): axum::Extension<auth::User>) -> Json<J> {
+    Json(json!({ "id": user.id, "username": user.username }))
 }
 
 async fn no_store(req: axum::extract::Request, next: axum::middleware::Next) -> Response {

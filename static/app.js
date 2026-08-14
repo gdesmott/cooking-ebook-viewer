@@ -13,6 +13,9 @@ const snip = s => esc(s).replaceAll('&lt;mark&gt;', '<mark>').replaceAll('&lt;/m
 
 const get = async url => {
   const r = await fetch(url);
+  // A session can expire while the page is open; send the user to sign in
+  // again rather than rendering an error into the list.
+  if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname + location.hash); throw new Error('signed out'); }
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 };
@@ -229,3 +232,7 @@ document.getElementById('searchform').addEventListener('submit', e => e.preventD
 
 window.addEventListener('hashchange', route);
 route();
+
+get('/api/me')
+  .then(me => { document.getElementById('whoami').textContent = me.username; })
+  .catch(() => {});

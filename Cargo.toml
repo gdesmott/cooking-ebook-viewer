@@ -5,12 +5,15 @@ edition = "2024"
 
 [dependencies]
 anyhow = "1.0.104"
+argon2 = "0.5.3"
 axum = "0.8.9"
 lol_html = "3.0.1"
 mime_guess = "2.0.5"
 percent-encoding = "2.3.2"
 regex = "1.13.1"
 roxmltree = "0.21.1"
+rpassword = "7.5.4"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 scraper = "0.27.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

@@ -51,6 +51,14 @@ mark { background: var(--accent-soft); color: var(--accent); border-radius: 3px;
 .searchbox input:focus { outline: 2px solid var(--accent); outline-offset: -1px; border-color: transparent; }
 .navlinks { display: flex; gap: .9rem; font-size: .92rem; color: var(--muted); }
 .navlinks a:hover, .navlinks a.on { color: var(--accent); }
+.signout { display: flex; align-items: center; gap: .5rem; margin: 0; }
+.signout #whoami { font-size: .82rem; }
+.signout button {
+  font: inherit; font-size: .82rem; cursor: pointer; padding: .15rem .6rem;
+  color: var(--muted); background: transparent;
+  border: 1px solid var(--line); border-radius: 999px;
+}
+.signout button:hover { color: var(--accent); border-color: var(--accent); }
 
 main { padding: 1.4rem 1.1rem 4rem; max-width: 1280px; margin: 0 auto; }
 
