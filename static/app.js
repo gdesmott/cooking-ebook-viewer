@@ -47,7 +47,7 @@ function recipeCard(r) {
   const meta = [r.yield, r.time].filter(Boolean).map(x => `<span class="pill">${esc(x)}</span>`).join('');
   const badges = [
     r.fav ? '<span class="badge" title="Favourite">♥</span>' : '',
-    r.cooked ? '<span class="badge" title="You have cooked this">🍳</span>' : '',
+    r.cooked ? '<span class="badge" title="You have cooked this">🍲</span>' : '',
   ].join('');
   return `<a class="rcard" href="#/recipe/${r.id}">
     ${img}
@@ -322,7 +322,7 @@ function renderMarks(id, m, { compact = false } = {}) {
 
   box.innerHTML = `
     <div class="markbar">
-      <button class="mbtn cook" id="cookbtn">🍳 Cooked it</button>
+      <button class="mbtn cook" id="cookbtn">🍲 Cooked it</button>
       <button class="mbtn fav${m.favorite ? ' on' : ''}" id="favbtn"
               aria-pressed="${m.favorite}">${m.favorite ? '♥' : '♡'} Favourite</button>
       <span class="cooknote">${times ? `Cooked ${times}×` : 'Not cooked'} · ${last}</span>

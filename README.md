@@ -71,7 +71,7 @@ Open a recipe and you can record that you **cooked it** (once per session, so
 the history shows every time), mark it a **favourite**, give it your own
 **tags**, and keep **notes** on it — tweaks, timings, who liked it. The
 Favourites, History and Tags views in the header find them again, and search
-results are badged with ♥ and 🍳 for what you have already loved or cooked.
+results are badged with ♥ and 🍲 for what you have already loved or cooked.
 
 Marks are per account and stored in `auth.db`, keyed by a **stable recipe
 key** — `filename|document|anchor`, taken from the epub itself. `recipes.id` is
