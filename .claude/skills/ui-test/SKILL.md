@@ -1,12 +1,13 @@
 ---
 name: ui-test
 description: >-
-  How to drive this app's frontend in a real browser: stand up a throwaway
-  server and account, run a Playwright script against it, read the screenshots,
-  and tear it all down without touching the user's running server or their
-  account data. Use whenever a change to static/app.js, static/app.css,
-  static/index.html or any /api route needs checking in a browser rather than
-  with curl — and whenever asked to "test the UI", "check it in a browser",
+  How to drive this app's frontend in a real browser — phone viewport by
+  default, desktop on request: stand up a throwaway server and account, run a
+  Playwright script against it, read the screenshots, and tear it all down
+  without touching the user's running server or their account data. Use
+  whenever a change to static/app.js, static/app.css, static/index.html or any
+  /api route needs checking in a browser rather than with curl — and whenever
+  asked to "test the UI", "check it in a browser", "check it on mobile",
   "screenshot the app", or "use playwright" here.
 ---
 
@@ -15,6 +16,13 @@ description: >-
 There is no test suite in this repo; UI verification is a browser run you set up
 yourself. The whole procedure is below, in order. Budget five minutes for the
 first run (a browser download) and under one for later ones.
+
+**Runs default to phone emulation** (iPhone 13, 390×844, touch). That is the
+layout that breaks — `app.css` has one breakpoint, `@media (max-width: 820px)`,
+and everything below it is a different app: no nav, single-column reader,
+stacked detail. `UI_DEVICE=desktop` gives the old 1280×800 window. Run both
+whenever a change touches `static/app.css` or any layout in `app.js`; mobile
+alone is the right default for everything else. Section 8 has what differs.
 
 ## 1. Get a browser
 
@@ -110,7 +118,9 @@ screenshots, cleans up after itself and exits non-zero on failure. Copy it into
 
 ```sh
 cd "$SCRATCH" && env BASE=http://127.0.0.1:8099 CB_USER=pwtest \
-  CB_PASS=pw-temp-test-9f2a node uitest.js
+  CB_PASS=pw-temp-test-9f2a node uitest.js                     # phone
+cd "$SCRATCH" && env UI_DEVICE=desktop BASE=http://127.0.0.1:8099 \
+  CB_USER=pwtest CB_PASS=pw-temp-test-9f2a node uitest.js      # 1280×800
 ```
 
 Points that matter here:
@@ -145,9 +155,24 @@ Points that matter here:
   Check the heading each view actually renders (`viewRecipes` → `Results for
   “…”`, `viewHistory` → `Cooking history`, …), and note that history rows are
   `.hrow`, not `.rcard`.
+- **Navigate by hash on a phone, by nav click on desktop.** `.navlinks` is
+  `display: none` under 820px, so `page.click('.navlinks a[href="#/history"]')`
+  times out on mobile — use `page.goto('#/history')` and then
+  `window.scrollTo(0, 0)`, because a hash goto restores the old scroll offset.
+  The `go()` helper in `harness.js` picks the right one and resets the scroll.
+- **Wait for exactly `Saved`, not for any text, after typing a note.** The
+  savebox shows `Editing…` first, so a "has any text" wait resolves before the
+  POST lands and the following `reload()` races it away. The failure surfaces
+  later and looks unrelated: `#comment` is hidden after the reload (the panel
+  only renders `open` when a note exists) and the run dies on a timeout waiting
+  for a textarea that is present but collapsed.
 - **Exercise infinite scroll on `#/recipes`, not on a search.** A query with one
   page of hits passes `after >= before` trivially. The full index really has a
-  second page: 60 → 120.
+  second page: 60 → 120 — the same on a phone, where the cards are one per row.
+- **Assert there is no horizontal overflow** on every view you visit:
+  `document.documentElement.scrollWidth - window.innerWidth <= 1`. It is the
+  classic phone break and a screenshot will not show it — the page just looks
+  cropped, exactly like a correct narrow layout. `noOverflow()` in `harness.js`.
 - **The listing APIs return `{items: [...]}`, not a bare array.** `/api/history`,
   `/api/favorites`, `/api/tags` and `/api/tags/{tag}` all wrap; `.length` on the
   response is `undefined`, which compares false against 0 and fails a teardown
@@ -169,7 +194,17 @@ layout.
 Seed a realistic amount of data before the screenshots — one row hides layout
 problems. Log in with `curl -c` and POST a handful of entries with different
 `at` timestamps, then screenshot `#/history`, `#/favorites`, `#/tags` and a
-recipe page at 1280×800.
+recipe page — on the phone viewport, and at 1280×800 if the change touches CSS.
+
+**Phone screenshots are where the layout bugs actually are.** A mobile pass with
+every assertion green still photographed `#/history` with each row's card
+crushed to about a third of the width, titles breaking one word per line and
+"Remove" printed on top of the book name. Nothing in the DOM said so: the row's
+own width fitted the viewport, so a width assertion passed. Only the picture
+showed it.
+
+Pin `deviceScaleFactor: 2` on the phone context. `devices['iPhone 13']` sets 3,
+which yields 1170×2532 PNGs with no more legible detail.
 
 Emoji render as tofu boxes in this headless Chromium (no emoji font). The 🥕 in
 the header does too, and it is fine in a real browser — do not "fix" it.
@@ -181,7 +216,8 @@ Ways a screenshot lies, each of which has cost a round of false findings:
   shot comes out mid-page, heading cut off — which reads as "the app doesn't
   scroll to top between views". It does; `route()` resets it on a real
   navigation. Reach views the way a user does — `page.click('.navlinks
-  a[href="#/history"]')` — or `window.scrollTo(0, 0)` before the shot. Verify
+  a[href="#/history"]')` — or `window.scrollTo(0, 0)` before the shot. On a
+  phone there is no nav to click, so the `scrollTo` is not optional. Verify
   `window.scrollY` before reporting a scroll bug.
 - **Thumbnails are still loading the instant the rows appear.** Screenshot right
   after `waitForSelector('.hrow')` and every cover is a blank placeholder, which
@@ -190,12 +226,58 @@ Ways a screenshot lies, each of which has cost a round of false findings:
 - **The mouse stays where the last click left it**, and a `:hover` row is tinted
   exactly like a selected one — a reader screenshot appeared to highlight the
   wrong TOC entry. `await page.mouse.move(1270, 10)` before every screenshot.
+  Not needed under phone emulation: `tap()` leaves no hover behind, and the
+  park coordinate is off-screen at 390px anyway.
 - **An iframe can photograph blank while holding content.** `/page` renders in a
   sandboxed iframe that paints a beat after it loads. Before believing an empty
   pane, check the DOM: `frame.contentDocument.body.textContent.length` and the
   `src`. Assert on those; treat the picture as secondary for iframe content.
 
-## 7. Tear down
+## 7. What differs below 820px
+
+`static/app.css` has exactly one layout breakpoint, `@media (max-width: 820px)`,
+and it changes four things. Everything below was confirmed in a browser at
+390×844, not read off the stylesheet.
+
+- **`.navlinks { display: none }`; a fixed `.tabbar` replaces it.** The same
+  five destinations sit in a bottom bar (`index.html`, hidden on desktop), so
+  navigate with `.tabbar a[href="#/history"]` on a phone and `.navlinks a[…]`
+  on desktop — the `go()` helper picks. `body` gets a matching `padding-bottom`
+  so the bar never covers the last row; assert that geometrically
+  (`lastCard.bottom <= tabbar.top`) if you touch the bar or the padding.
+  The header wraps to two rows below the breakpoint: brand + sign-out, then the
+  search box full width.
+- **`.signout` is a sibling of `.navlinks`, not a child** — deliberately. It
+  used to live inside it, which meant the breakpoint hid sign-out and `#whoami`
+  along with the nav and left phone users unable to log out. If you move it
+  back under `.navlinks`, that regresses; the check is
+  `reachable('.signout button')` at 390px.
+- **`.reader` collapses to one column**, TOC above the frame (`max-height:
+  40vh`) and `.frame` at `75vh`. Assert the stacking geometrically
+  (`frame.top >= toc.bottom`) rather than trusting the picture — see the iframe
+  caveat above.
+- **`.detail` collapses to one column**, so the hero image, ingredients and
+  method run in sequence and the recipe page gets long. The marks bar, tag row,
+  cook-log chips and notes panel all keep working and stay within the viewport.
+- **`.rcard` grid becomes one card per row**, and `.book` two per row. Infinite
+  scroll still pages 60 → 120.
+
+Two things a mobile pass reliably finds that a desktop pass cannot:
+
+- **Tap-target size.** The breakpoint raises `.mbtn`, `.tagadd input`,
+  `.linkbtn` and the sign-out button to a 44px minimum; they are 36px, 25px and
+  27px on desktop, which is fine for a mouse. `boundingBox().height` is the
+  check — and note a padding change alone does not do it, `min-height` does.
+- **`.hrow` still has no mobile rule.** It keeps the desktop
+  date-gutter/card/Remove grid at 390px, which mangles `#/history`: the card is
+  crushed to about a third of the width and "Remove" prints over the book name.
+  Known and unfixed — do not report it as new.
+
+Use `page.tap()` rather than `page.click()` once the context has touch — a
+handler bound to `click` still fires, and the test then matches what a phone
+user does.
+
+## 8. Tear down
 
 Stop your server (`TaskStop` on the background task), `user rm` the temp
 account, verify the counts are back where they started, and say plainly what you
