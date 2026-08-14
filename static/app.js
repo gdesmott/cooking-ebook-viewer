@@ -224,12 +224,18 @@ async function viewBook(id) {
 
   view.innerHTML = `
     <div class="crumb"><a href="#/">Books</a> › ${esc(b.title)}</div>
+    <div class="readerbar">
+      <h2 class="rtitle" id="rtitle"></h2>
+      <a class="btn" id="fullrecipe" href="#/">Full recipe →</a>
+    </div>
+    <div id="marks" class="marks"></div>
     <div class="reader">
       <aside class="toc">
         <h2>${esc(b.title)}</h2>
         ${groups.map(g => `
           ${g.key ? `<div class="chap">${esc(g.key)}</div>` : ''}
           ${g.items.map(r => `<a data-doc="${esc(r.doc)}" data-anchor="${esc(r.anchor || '')}"
+              data-id="${r.id}"
               href="#/book/${id}?r=${r.id}">${esc(r.title)}</a>`).join('')}`).join('')}
       </aside>
       <iframe class="frame" id="frame"></iframe>
@@ -237,10 +243,25 @@ async function viewBook(id) {
 
   const frame = document.getElementById('frame');
   const links = [...view.querySelectorAll('.toc a')];
+
+  // The marks panel follows the TOC selection. Clicking an entry does not
+  // change the hash, so nothing else would redraw it. A sequence number keeps
+  // a slow fetch for an earlier entry from painting over a later one.
+  let seq = 0;
+  const showMarks = async rid => {
+    const mine = ++seq;
+    const r = await get(`/api/recipes/${rid}`);
+    if (mine !== seq) return;
+    document.getElementById('rtitle').textContent = r.title;
+    document.getElementById('fullrecipe').href = `#/recipe/${rid}`;
+    renderMarks(rid, r.marks, { compact: true });
+  };
+
   const open = (a, reveal = false) => {
     links.forEach(l => l.classList.toggle('on', l === a));
     const anchor = a.dataset.anchor ? '#' + a.dataset.anchor : '';
     frame.src = `/page/${id}/${a.dataset.doc}${anchor}`;
+    showMarks(a.dataset.id);
     // Deep-linking to a recipe late in the book otherwise leaves the TOC at the
     // top, so the reader looks like it opened the wrong entry. Only on arrival:
     // scrolling under a click the reader just made would yank the list away.
@@ -288,7 +309,11 @@ async function viewRecipe(id) {
 
 /// The whole marks panel is redrawn from whatever the server last returned,
 /// so there is one source of truth and no local state to drift.
-function renderMarks(id, m) {
+///
+/// `compact` trims it for the reader, where every row it adds pushes the page
+/// itself down: no cook-log chips (the full recipe page lists them) and notes
+/// stay shut rather than springing open whenever one exists.
+function renderMarks(id, m, { compact = false } = {}) {
   const box = document.getElementById('marks');
   if (!box) return;
 
@@ -310,17 +335,17 @@ function renderMarks(id, m) {
         <input id="taginput" placeholder="+ tag" maxlength="40" autocomplete="off">
       </form>
     </div>
-    <div class="cooklog">${m.cooked.map(c =>
+    ${compact ? '' : `<div class="cooklog">${m.cooked.map(c =>
       `<span class="chip">${fmtDate(c.at)}<button class="x" data-entry="${c.id}"
-        title="Remove this session">×</button></span>`).join('')}</div>
-    <details class="notes"${m.comment ? ' open' : ''}>
+        title="Remove this session">×</button></span>`).join('')}</div>`}
+    <details class="notes"${m.comment && !compact ? ' open' : ''}>
       <summary>Notes${m.comment ? '' : ' — none yet'}</summary>
       <textarea id="comment" rows="4"
         placeholder="Tweaks, timings, who liked it…">${esc(m.comment)}</textarea>
       <span class="saved" id="savedmsg"></span>
     </details>`;
 
-  const refresh = updated => renderMarks(id, updated);
+  const refresh = updated => renderMarks(id, updated, { compact });
 
   document.getElementById('cookbtn').addEventListener('click', async () => {
     refresh(await send(`/api/recipes/${id}/cook`, 'POST', {}));
