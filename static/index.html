@@ -19,13 +19,24 @@
     <a href="#/favorites">Favourites</a>
     <a href="#/history">History</a>
     <a href="#/tags">Tags</a>
-    <form method="post" action="/logout" class="signout">
-      <span id="whoami"></span>
-      <button type="submit">Sign out</button>
-    </form>
   </nav>
+  <!-- Outside .navlinks on purpose: that whole nav is display:none below 820px,
+       and signing out must not disappear with it. -->
+  <form method="post" action="/logout" class="signout">
+    <span id="whoami"></span>
+    <button type="submit">Sign out</button>
+  </form>
 </header>
 <main id="view"></main>
+<!-- Phone navigation. .navlinks has no room below 820px, so the same five
+     destinations live in a bottom bar there; this is hidden on desktop. -->
+<nav class="tabbar">
+  <a href="#/">Books</a>
+  <a href="#/recipes">Recipes</a>
+  <a href="#/favorites">Favourites</a>
+  <a href="#/history">History</a>
+  <a href="#/tags">Tags</a>
+</nav>
 <script src="/app.js"></script>
 </body>
 </html>

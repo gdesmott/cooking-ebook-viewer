@@ -60,6 +60,10 @@ mark { background: var(--accent-soft); color: var(--accent); border-radius: 3px;
 }
 .signout button:hover { color: var(--accent); border-color: var(--accent); }
 
+/* Phone navigation: .navlinks cannot fit below 820px, so the same destinations
+   appear as a fixed bottom bar there. Hidden on desktop. */
+.tabbar { display: none; }
+
 main { padding: 1.4rem 1.1rem 4rem; max-width: 1280px; margin: 0 auto; }
 
 h1 { font-size: 1.45rem; margin: 0 0 .2rem; letter-spacing: -.02em; }
@@ -207,5 +211,40 @@ h1 { font-size: 1.45rem; margin: 0 0 .2rem; letter-spacing: -.02em; }
   .toc { max-height: 40vh; }
   .frame { height: 75vh; }
   .detail { grid-template-columns: 1fr; }
+
+  /* The top nav goes; the tab bar below takes over its five destinations. The
+     sign-out form is a sibling of .navlinks, so it survives this. */
   .navlinks { display: none; }
+
+  /* Two rows: brand and sign-out, then the search box full width. Squeezing
+     all three onto one row leaves the search input about 120px wide. */
+  .topbar { flex-wrap: wrap; gap: .6rem 1rem; }
+  .brand { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .searchbox { order: 3; flex-basis: 100%; max-width: none; }
+  .signout button { min-height: 44px; padding: .35rem .9rem; }
+
+  .tabbar {
+    display: flex;
+    position: fixed; inset: auto 0 0 0; z-index: 30;
+    background: color-mix(in srgb, var(--panel) 92%, transparent);
+    backdrop-filter: blur(10px);
+    border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .tabbar a {
+    flex: 1; min-width: 0; min-height: 48px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: .72rem; color: var(--muted);
+    border-top: 2px solid transparent;
+  }
+  .tabbar a.on { color: var(--accent); border-top-color: var(--accent); }
+
+  /* Clear the fixed bar, or it sits on top of the last row of every list. */
+  body { padding-bottom: calc(48px + env(safe-area-inset-bottom, 0px)); }
+
+  /* 36px is under the 44px minimum finger target on both platforms. */
+  .mbtn { min-height: 44px; padding: .5rem 1rem; }
+  .tagadd input { min-height: 44px; }
+  .tag .x, .chip .x { min-width: 32px; min-height: 32px; }
+  .linkbtn { min-height: 44px; }
 }

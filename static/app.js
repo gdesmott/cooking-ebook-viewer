@@ -376,7 +376,9 @@ async function route() {
   const [path] = hash.split('?');
   const parts = path.split('/').filter(Boolean);
 
-  document.querySelectorAll('.navlinks a').forEach(a =>
+  // Both navs: .navlinks on desktop, .tabbar on a phone. They carry the same
+  // five hrefs, so one pass marks whichever is on screen.
+  document.querySelectorAll('.navlinks a, .tabbar a').forEach(a =>
     a.classList.toggle('on', a.getAttribute('href') === '#/' + (parts[0] || '')));
 
   // Set here rather than in each view: the views assign `view.innerHTML`
