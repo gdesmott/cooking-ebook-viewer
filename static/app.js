@@ -14,6 +14,12 @@ const snip = s => esc(s).replaceAll('&lt;mark&gt;', '<mark>').replaceAll('&lt;/m
 const fmtDate = ts => new Date(ts * 1000).toLocaleDateString(undefined,
   { day: 'numeric', month: 'short', year: 'numeric' });
 
+// The tab names the recipe you are on, so a window parked on one is findable
+// among a dozen others. The router clears it on every route, or the last
+// recipe's name would sit there while you browse the tag list.
+const SITE = 'Cookbook Library';
+const setTitle = name => { document.title = name ? `${name} · ${SITE}` : SITE; };
+
 const get = async (url, opts) => {
   const r = await fetch(url, opts);
   // A session can expire while the page is open; send the user to sign in
@@ -257,6 +263,9 @@ async function viewBook(id) {
     if (mine !== seq) return;
     document.getElementById('rtitle').textContent = r.title;
     document.getElementById('fullrecipe').href = `#/recipe/${rid}`;
+    // The reader keeps the hash on #/book/N while the entry changes, so the
+    // tab has to be renamed here rather than by the router.
+    setTitle(r.title);
     renderMarks(rid, r.marks, { compact: true });
   };
 
@@ -323,6 +332,7 @@ async function viewRecipe(id) {
       </div>
     </div>`;
 
+  setTitle(r.title);
   renderMarks(id, r.marks);
 }
 
@@ -430,6 +440,7 @@ async function route() {
   // Set here rather than in each view: the views assign `view.innerHTML`
   // directly, so a class one of them set would leak into the next one.
   view.className = 'view-' + (parts[0] || 'books');
+  setTitle(null);
 
   try {
     if (!parts.length) return await viewBooks();
