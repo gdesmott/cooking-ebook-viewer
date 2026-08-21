@@ -126,6 +126,7 @@ pub async fn run(db_path: &str, auth_db: &str, addr: &str, secure_cookie: bool) 
         .route("/api/recipes/{id}/tags/{tag}", delete(api_remove_tag))
         .route("/api/history", get(api_history))
         .route("/api/favorites", get(api_favorites))
+        .route("/api/favorites/all", get(api_favorites_all))
         .route("/api/tags", get(api_tags))
         .route("/api/tags/{tag}", get(api_tagged))
         .layer(axum::middleware::from_fn(no_store));
@@ -896,6 +897,38 @@ async fn api_favorites(
     let mut items = cards_for_keys(&st, &keys).await?;
     badge(&st, user.id, &mut items)?;
     Ok(Json(json!({ "items": items, "offset": offset })))
+}
+
+/// Everyone's favourites, grouped by user. Not paginated - a household's
+/// worth of favourites is small enough to send in one response.
+async fn api_favorites_all(
+    State(st): State<St>,
+    axum::Extension(user): axum::Extension<auth::User>,
+) -> Result<Json<J>, AppError> {
+    let (usernames, all) = {
+        let conn = st.auth.lock().expect("auth db mutex");
+        (
+            auth::list_users_with_id(&conn)?,
+            marks::all_favorites(&conn)?,
+        )
+    };
+
+    let mut keys_by_user: HashMap<i64, Vec<String>> = HashMap::new();
+    for (uid, key) in all {
+        keys_by_user.entry(uid).or_default().push(key);
+    }
+
+    let mut groups = Vec::new();
+    for (uid, username) in usernames {
+        let Some(keys) = keys_by_user.get(&uid) else {
+            continue;
+        };
+        let mut items = cards_for_keys(&st, keys).await?;
+        badge(&st, user.id, &mut items)?;
+        groups.push(json!({ "username": username, "items": items }));
+    }
+
+    Ok(Json(json!({ "groups": groups })))
 }
 
 async fn api_tags(

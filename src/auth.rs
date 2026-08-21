@@ -156,6 +156,13 @@ pub fn list_users(conn: &Connection) -> Result<Vec<(String, i64)>> {
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
+/// All accounts as (id, username), for grouping other users' data by name.
+pub fn list_users_with_id(conn: &Connection) -> Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare("SELECT id, username FROM users ORDER BY username")?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
 pub fn count_users(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM users", [], |r| r.get(0))?)
 }

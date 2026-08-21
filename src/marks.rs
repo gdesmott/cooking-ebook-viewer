@@ -215,6 +215,17 @@ pub fn favorites(conn: &Connection, user_id: i64, limit: i64, offset: i64) -> Re
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
 }
 
+/// Every favourite from every user, most recently favourited first within
+/// each user. Grouping by user happens in the caller.
+pub fn all_favorites(conn: &Connection) -> Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT user_id, recipe_key FROM recipe_marks WHERE favorite = 1 \
+         ORDER BY user_id, updated_at DESC",
+    )?;
+    let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
 /// Every tag the user has used, with how many recipes carry it.
 pub fn tag_counts(conn: &Connection, user_id: i64) -> Result<Vec<(String, i64)>> {
     let mut stmt = conn.prepare(

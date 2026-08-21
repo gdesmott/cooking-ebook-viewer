@@ -165,11 +165,15 @@ async function viewRecipes(q = '', bookId = null) {
 }
 
 async function viewFavorites() {
-  await pagedList({
-    heading: '<h1>Favourites</h1>',
-    empty: 'Nothing loved yet — open a recipe and hit ♥.',
-    url: offset => `/api/favorites?limit=${PAGE}&offset=${offset}`,
-  });
+  stopPaging();
+  loading();
+  const { groups } = await get('/api/favorites/all');
+
+  view.innerHTML = `<h1>Favourites</h1>
+    <p class="sub">${groups.length ? '' : 'Nothing loved yet — open a recipe and hit ♥.'}</p>
+    ${groups.map(g => `
+      <h2>${esc(g.username)}</h2>
+      <div class="recipes">${g.items.map(recipeCard).join('')}</div>`).join('')}`;
 }
 
 async function viewHistory() {
