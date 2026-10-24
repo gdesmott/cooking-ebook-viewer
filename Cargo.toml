@@ -5,6 +5,9 @@ edition = "2024"
 
 [profile.release]
 strip = "symbols"
+# A panic inside a handler only fails that request, leaving the process up in
+# whatever state caused it. Abort instead and let systemd restart us.
+panic = "abort"
 
 [dependencies]
 anyhow = "1.0.104"
@@ -20,6 +23,6 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 scraper = "0.27.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "fs"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "fs", "sync"] }
 turso = "0.7.2"
 zip = "8.6.0"

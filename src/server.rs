@@ -17,10 +17,15 @@ use serde::Serialize;
 use serde_json::{Value as J, json};
 use std::collections::HashMap;
 use std::sync::Arc;
-use turso::{Database, Value, params};
+use turso::{Value, params};
 
 struct AppState {
-    db: Database,
+    /// The one library connection, shared by every request. Turso 0.7's page
+    /// cache is shared between a `Database`'s connections and is not safe
+    /// under concurrent reads: it panics with "Attempted to insert different
+    /// page with same key" and stays corrupt for the life of the process, so
+    /// every later query panics too. Serializing costs nothing at this scale.
+    db: tokio::sync::Mutex<turso::Connection>,
     /// Accounts and sessions; a separate SQLite database from the library,
     /// which is rebuilt from scratch on every index.
     auth: std::sync::Mutex<rusqlite::Connection>,
@@ -87,16 +92,11 @@ pub async fn run(db_path: &str, auth_db: &str, addr: &str, secure_cookie: bool) 
         );
     }
 
-    let database = turso::Builder::new_local(db_path)
-        .experimental_index_method(true)
-        .build()
-        .await?;
-
     let auth_conn = auth::open(auth_db)?;
     let n_users = auth::count_users(&auth_conn)?;
 
     let state: St = Arc::new(AppState {
-        db: database,
+        db: tokio::sync::Mutex::new(conn),
         auth: std::sync::Mutex::new(auth_conn),
         secure_cookie,
         books,
@@ -376,7 +376,7 @@ struct BookOut {
 }
 
 async fn api_books(State(st): State<St>) -> Result<Json<Vec<BookOut>>, AppError> {
-    let conn = st.db.connect()?;
+    let conn = st.db.lock().await;
     let mut rows = conn
         .query(
             "SELECT id, title, author, n_recipes FROM books ORDER BY title",
@@ -397,7 +397,7 @@ async fn api_books(State(st): State<St>) -> Result<Json<Vec<BookOut>>, AppError>
 
 /// Chapter -> recipes, for the book reader sidebar.
 async fn api_book_toc(State(st): State<St>, Path(id): Path<i64>) -> Result<Json<J>, AppError> {
-    let conn = st.db.connect()?;
+    let conn = st.db.lock().await;
 
     let mut rows = conn
         .query("SELECT title, author FROM books WHERE id = ?1", params![id])
@@ -450,7 +450,7 @@ async fn api_search(
     axum::Extension(user): axum::Extension<auth::User>,
     Query(qp): Query<SearchQ>,
 ) -> Result<Json<J>, AppError> {
-    let conn = st.db.connect()?;
+    let conn = st.db.lock().await;
     let limit = qp.limit.unwrap_or(60).clamp(1, 300);
     let offset = qp.offset.unwrap_or(0).max(0);
     let q = qp.q.clone().unwrap_or_default().trim().to_string();
@@ -636,7 +636,7 @@ async fn api_recipe(
     axum::Extension(user): axum::Extension<auth::User>,
     Path(id): Path<i64>,
 ) -> Result<Json<J>, AppError> {
-    let conn = st.db.connect()?;
+    let conn = st.db.lock().await;
     let mut rows = conn
         .query(
             "SELECT r.id, r.title, r.chapter, r.book_id, b.title, r.doc, r.anchor, \
@@ -817,7 +817,7 @@ async fn cards_for_keys(st: &St, keys: &[String]) -> Result<Vec<J>, AppError> {
     );
     let prm: Vec<Value> = pairs.iter().map(|(id, _)| Value::Integer(*id)).collect();
 
-    let conn = st.db.connect()?;
+    let conn = st.db.lock().await;
     let mut rows = conn.query(&sql, prm).await?;
     let mut by_id: HashMap<i64, J> = HashMap::new();
     while let Some(r) = rows.next().await? {
@@ -969,7 +969,7 @@ async fn api_ingredients(
     State(st): State<St>,
     Query(qp): Query<SearchQ>,
 ) -> Result<Json<J>, AppError> {
-    let conn = st.db.connect()?;
+    let conn = st.db.lock().await;
     let limit = qp.limit.unwrap_or(200).clamp(1, 1000);
     let q = format!(
         "%{}%",
